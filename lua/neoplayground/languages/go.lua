@@ -1,134 +1,96 @@
 -- lua/neoplayground/languages/go.lua
-local base = require('neoplayground.languages.base')
+local base = require("neoplayground.languages.base")
 
--- Create new language instance
-local Go = base.new({
-    name = "go",
-    file_pattern = "*.go",
-    command_name = "GoPlaygroundStart"
+local instance = base.Language.new({
+	name = "go",
+	file_pattern = "*.go",
+	command_name = "GoPlaygroundStart",
+	executor = {
+		command = "/snap/bin/go",
+		timeout = 5000,
+	},
 })
 
--- Override execute function for Go
-function Go:execute(content, num_lines)
-    -- First validate the setup
-    local valid, err = self:validate()
-    if not valid then
-        return self:format_error(err)
-    end
+function instance:execute(content, num_lines)
+	-- Initialize output_lines with empty strings for all lines
+	local output_lines = {}
+	local buffer_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+	for i = 1, #buffer_lines do
+		output_lines[i] = ""
+	end
 
-    -- Get language configuration
-    local config = self:get_config()
+	local ok, result = pcall(function()
+		-- Create temporary directory
+		local temp_dir = vim.fn.tempname()
+		vim.fn.mkdir(temp_dir, "p")
 
-    -- Add main package and imports if not present
-    if not content:match("package%s+main") then
-        local imports = [[
+		local source_file = temp_dir .. "/main.go"
+		local binary_file = temp_dir .. "/main"
+
+		-- Get buffer content
+		local buffer_content = table.concat(buffer_lines, "\n")
+
+		-- Create Go file content
+		local file_content = string.format(
+			[[
 package main
-
 import (
     "fmt"
-    "reflect"
 )
-
-]]
-        content = imports .. content
-    end
-
-    -- Add main function if not present
-    if not content:match("func%s+main%s*%(") then
-        content = content .. [[
-
 func main() {
-    // Auto-generated main function
-    __USER_CODE__
-}
-]]
-    end
+    %s
+}]],
+			buffer_content
+		)
 
-    -- Create a temporary file for the Go code
-    local temp_dir = os.tmpname()
-    os.remove(temp_dir)
-    os.execute('mkdir -p ' .. temp_dir)
-    
-    local source_file = temp_dir .. '/main.go'
-    local output_file = temp_dir .. '/main'
+		-- Write Go file
+		local file = io.open(source_file, "w")
+		if not file then
+			return { "Error: Failed to create Go source file" }
+		end
+		file:write(file_content)
+		file:close()
 
-    -- Process the content to capture prints and values
-    local processed_content = content:gsub("__USER_CODE__", function()
-        local lines = {}
-        for line in content:gmatch("[^\r\n]+") do
-            -- Skip package, import, and function declarations
-            if not line:match("^%s*package%s+") and
-               not line:match("^%s*import%s+") and
-               not line:match("^%s*func%s+") then
-                
-                -- If line is just a variable, wrap it in a print
-                if line:match("^%s*[%w_]+%s*$") then
-                    local var = line:match("^%s*([%w_]+)%s*$")
-                    line = string.format('fmt.Printf("%%v\\n", %s)', var)
-                end
-                table.insert(lines, line)
-            end
-        end
-        return table.concat(lines, "\n")
-    end)
+		-- Build and run
+		local build_cmd = string.format("/snap/bin/go build -o %s %s", binary_file, source_file)
+		local build_result = vim.fn.system(build_cmd)
 
-    -- Write to source file
-    local f = io.open(source_file, 'w')
-    f:write(processed_content)
-    f:close()
+		if vim.v.shell_error ~= 0 then
+			return { "Build error: " .. build_result }
+		end
 
-    -- Prepare output lines
-    local output_lines = self:prepare_output_lines(num_lines)
+		local run_result = vim.fn.system(binary_file)
+		if vim.v.shell_error ~= 0 then
+			return { "Run error: " .. run_result }
+		end
 
-    -- Build flags from config
-    local build_flags = table.concat(config.executor.build_flags or {}, " ")
+		-- Process output line by line
+		local output_line_num = 1
+		for i, line in ipairs(buffer_lines) do
+			-- If line has a print statement, assign output to it
+			if line:match("fmt.Print") then
+				local output = ""
+				if output_line_num <= #output_lines then
+					local next_output = run_result:match("([^\n]*)\n?")
+					if next_output then
+						output = next_output
+						run_result = run_result:sub(#next_output + 2) -- +2 for \n
+					end
+				end
+				output_lines[i] = output
+				output_line_num = output_line_num + 1
+			end
+		end
 
-    -- Compile the code
-    local compile_cmd = string.format(
-        "%s build %s -o %s %s",
-        config.executor.command,
-        build_flags,
-        output_file,
-        source_file
-    )
+		-- Cleanup
+		vim.fn.delete(temp_dir, "rf")
+		return output_lines
+	end)
 
-    local compile_success, compile_result = self:capture_command(compile_cmd)
-    if not compile_success then
-        -- Cleanup
-        os.execute('rm -rf ' .. temp_dir)
-        return self:format_error("Compilation error:\n" .. compile_result)
-    end
-
-    -- Execute the compiled program
-    local success, result = self:with_timeout(function()
-        return self:capture_command(output_file)
-    end)
-
-    -- Cleanup
-    os.execute('rm -rf ' .. temp_dir)
-
-    if not success then
-        return self:format_error(result)
-    end
-
-    -- Process output
-    local current_line = 1
-    for line in result:gmatch("[^\r\n]+") do
-        if current_line <= num_lines then
-            output_lines[current_line] = line
-            current_line = current_line + 1
-        end
-    end
-
-    return output_lines
+	if not ok then
+		return { tostring(result) }
+	end
+	return result
 end
 
--- Helper function to format Go code
-function Go:format_code(content)
-    local temp_file = self:create_temp_file(content, '.go')
-    local result = self:capture_command("gofmt " .. temp_file)
-    self:cleanup_temp_file(temp_file)
-    return result
-end
-
-return Go
+return instance

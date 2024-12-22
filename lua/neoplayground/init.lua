@@ -1,127 +1,135 @@
 -- lua/neoplayground/init.lua
-
--- Main plugin module
 local M = {}
-
--- Import required modules
-local config = require('neoplayground.config')
-local ui = require('neoplayground.ui')
-local langs = require('neoplayground.languages')
 
 -- Plugin state
 M.state = {
-    initialized = false,
-    current_lang = nil,
-    windows = {
-        output_buf = nil,
-        output_win = nil,
-    }
+	initialized = false,
+	current_lang = nil,
 }
 
--- Setup function that will be called by lazy.nvim
+-- Store module references
+local config = nil
+local ui = nil
+local languages = nil
+
 function M.setup(opts)
-    if M.state.initialized then
-        return
-    end
+	if M.state.initialized then
+		return
+	end
 
-    -- Initialize configuration
-    config.setup(opts)
+	-- Load modules
+	config = require("neoplayground.config")
+	ui = require("neoplayground.ui")
+	languages = require("neoplayground.languages")
 
-    -- Create autocommand group
-    local augroup = vim.api.nvim_create_augroup("NeoPlayground", { clear = true })
+	-- Initialize
+	config.setup(opts)
+	ui.setup()
 
-    -- Register commands and autocommands for each enabled language
-    for lang_name, lang_config in pairs(config.get_languages()) do
-        if lang_config.enabled then
-            local lang = langs.get_language(lang_name)
-            if lang then
-                -- Create language-specific autocommand
-                vim.api.nvim_create_autocmd("BufWritePost", {
-                    group = augroup,
-                    pattern = lang.file_pattern,
-                    callback = function()
-                        local current_buf = vim.api.nvim_get_current_buf()
-                        if vim.b[current_buf].is_playground then
-                            M.update_output(current_buf, lang_name)
-                        end
-                    end,
-                })
+	-- Create autocommand group
+	local augroup = vim.api.nvim_create_augroup("NeoPlayground", { clear = true })
 
-                -- Create language-specific command
-                vim.api.nvim_create_user_command(lang.command_name, function()
-                    M.start_playground(lang_name)
-                end, {
-                    desc = string.format("Start %s playground", lang_name)
-                })
-            end
-        end
-    end
+	-- Create commands and autocommands for each language
+	for lang_name, lang_config in pairs(config.get_languages()) do
+		if lang_config.enabled then
+			local lang = languages.get_language(lang_name)
+			if lang then
+				-- Create command
+				vim.api.nvim_create_user_command(lang.command_name, function()
+					M.start_playground(lang_name)
+				end, {
+					desc = string.format("Start %s playground", lang_name),
+				})
 
-    M.state.initialized = true
+				-- Create autocommand for file save
+				vim.api.nvim_create_autocmd("BufWritePost", {
+					group = augroup,
+					pattern = lang.file_pattern,
+					callback = function()
+						local current_buf = vim.api.nvim_get_current_buf()
+						if vim.b[current_buf].is_playground then
+							M.update_output(current_buf, lang_name)
+						end
+					end,
+				})
+			end
+		end
+	end
+
+	M.state.initialized = true
 end
 
--- Function to start playground for a specific language
+--
+-- Start playground for a specific language
 function M.start_playground(lang_name)
-    local lang = langs.get_language(lang_name)
-    if not lang then
-        vim.notify(
-            string.format("Language '%s' not supported", lang_name),
-            vim.log.levels.ERROR
-        )
-        return
-    end
+	if not languages then
+		return
+	end
 
-    -- Set buffer local variables
-    vim.b.is_playground = true
-    vim.b.playground_lang = lang_name
-    M.state.current_lang = lang_name
+	local lang = languages.get_language(lang_name)
+	if not lang then
+		vim.notify(string.format("Language '%s' not supported", lang_name), vim.log.levels.ERROR)
+		return
+	end
 
-    -- Create or update UI
-    ui.create_output_window()
+	-- Set buffer local variables
+	vim.b.is_playground = true
+	vim.b.playground_lang = lang_name
+	M.state.current_lang = lang_name
 
-    -- Initial update
-    M.update_output(vim.api.nvim_get_current_buf(), lang_name)
+	-- Create output window
+	ui.create_output_window()
+
+	-- Initial update
+	M.update_output(vim.api.nvim_get_current_buf(), lang_name)
 end
 
--- Function to update output
+-- Update output for the current buffer
 function M.update_output(buf, lang_name)
-    -- Ensure UI is ready
-    ui.create_output_window()
+	if not languages or not ui then
+		return
+	end
 
-    -- Get the language handler
-    local lang = langs.get_language(lang_name)
-    if not lang then
-        vim.notify(
-            string.format("Language '%s' not found", lang_name),
-            vim.log.levels.ERROR
-        )
-        return
-    end
+	-- Get language handler
+	local lang = languages.get_language(lang_name)
+	if not lang then
+		vim.notify(string.format("Language '%s' not found", lang_name), vim.log.levels.ERROR)
+		return
+	end
 
-    -- Get buffer content
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local content = table.concat(lines, '\n')
+	-- Get buffer content
+	local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+	local content = table.concat(lines, "\n")
 
-    -- Execute code and get output
-    local success, output_lines = pcall(lang.execute, content, #lines)
+	-- Execute code
+	local success, output_lines = pcall(lang.execute, lang, content, #lines)
 
-    if not success then
-        output_lines = {
-            string.format("Error executing %s code:", lang_name),
-            output_lines
-        }
-    end
+	if not success then
+		output_lines = {
+			string.format("Error executing %s code:", lang_name),
+			output_lines,
+		}
+	end
 
-    -- Update output window
-    ui.update_output_window(output_lines)
+	-- Update output window
+	ui.update_output_window(output_lines)
 end
 
--- Function to stop playground
+-- Stop playground
 function M.stop_playground()
-    vim.b.is_playground = false
-    vim.b.playground_lang = nil
-    M.state.current_lang = nil
-    ui.cleanup()
+	vim.b.is_playground = false
+	vim.b.playground_lang = nil
+	M.state.current_lang = nil
+	if ui then
+		ui.cleanup()
+	end
+end
+
+-- Handle window resize
+function M.handle_resize()
+	if ui and M.state.current_lang then
+		ui.handle_resize()
+	end
 end
 
 return M

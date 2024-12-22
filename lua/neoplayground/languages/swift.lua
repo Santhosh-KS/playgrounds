@@ -1,100 +1,57 @@
 -- lua/neoplayground/languages/swift.lua
 local base = require("neoplayground.languages.base")
 
--- Create new language instance
-local Swift = base.new({
+-- Create new language instance for Swift
+local Swift = base.Language.new({
 	name = "swift",
 	file_pattern = "*.swift",
 	command_name = "SwiftPlaygroundStart",
 })
 
--- Override execute function for Swift
+-- Override execute method for Swift
 function Swift:execute(content, num_lines)
-	-- First validate the setup
+	-- Validate setup
 	local valid, err = self:validate()
 	if not valid then
 		return self:format_error(err)
 	end
 
-	-- Get language configuration
+	-- Get configuration
 	local config = self:get_config()
 
-	-- Add imports and helper functions if not present
-	local imports = [[
-import Foundation
-
-// Helper function to capture variable values
-func describe(_ value: Any) -> String {
-    let mirror = Mirror(reflecting: value)
-    if mirror.children.isEmpty {
-        return "\(value)"
-    }
-    return String(describing: value)
-}
-]]
-
-	-- Process content to capture variable values and prints
-	local processed_content = imports .. "\n"
-
-	-- Add line printing functionality
-	for line in content:gmatch("[^\r\n]+") do
-		if line:match("^%s*[%w_]+%s*$") then
-			-- If line is just a variable, print its value
-			local var = line:match("^%s*([%w_]+)%s*$")
-			processed_content = processed_content .. string.format('print("\\(describe(%s))")\n', var)
-		else
-			processed_content = processed_content .. line .. "\n"
-		end
+	-- Prepare output lines
+	local output_lines = {}
+	for i = 1, num_lines do
+		output_lines[i] = ""
 	end
 
-	-- Create temporary file
-	local temp_file = self:create_temp_file(processed_content, ".swift")
+	-- Create temporary file with content
+	local temp_file = self:create_temp_file(content, ".swift")
+	if not temp_file then
+		return self:format_error("Failed to create temporary file")
+	end
 
-	-- Prepare output lines
-	local output_lines = self:prepare_output_lines(num_lines)
-
-	-- Execute Swift code with timeout
-	local success, result = self:with_timeout(function()
-		local swift_cmd = string.format("%s %s", config.executor.command, temp_file)
-		return self:capture_command(swift_cmd)
-	end)
+	-- Execute Swift code
+	local success, result = self:capture_command(string.format("swift %s", temp_file))
 
 	-- Cleanup
 	self:cleanup_temp_file(temp_file)
 
+	-- Handle execution result
 	if not success then
 		return self:format_error(result)
 	end
 
 	-- Process output
-	local current_line = 1
+	local line_num = 1
 	for line in result:gmatch("[^\r\n]+") do
-		-- Skip Swift compiler messages
-		if not line:match("^%[.*%]") then
-			if current_line <= num_lines then
-				output_lines[current_line] = line
-				current_line = current_line + 1
-			end
+		if line_num <= num_lines then
+			output_lines[line_num] = line
+			line_num = line_num + 1
 		end
 	end
 
 	return output_lines
-end
-
--- Helper function to check Swift tools
-function Swift:check_tools()
-	local tools = {
-		"swift",
-		"swiftc",
-	}
-
-	for _, tool in ipairs(tools) do
-		if vim.fn.executable(tool) ~= 1 then
-			return false, string.format("Swift tool '%s' not found", tool)
-		end
-	end
-
-	return true
 end
 
 return Swift
